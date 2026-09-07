@@ -1,0 +1,26 @@
+{
+  "name": "meridian-rating-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "npm -ws --if-present run test",
+    "typecheck": "tsc -p packages/core && tsc -p packages/worker && tsc -p packages/ui",
+    "replay": "tsx scripts/replay.ts",
+    "demo:agent": "node demo/agent.mjs",
+    "demo:build": "esbuild demo/agent.ts --bundle --platform=node --format=esm --outfile=demo/agent.mjs --banner:js=\"import{createRequire}from'module';const require=createRequire(import.meta.url);\"",
+    "demo:agent:src": "tsx demo/agent.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "viem": "^2.55.19",
+    "x402-fetch": "^1.2.0"
+  }
+}

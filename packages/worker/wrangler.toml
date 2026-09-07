@@ -1,0 +1,36 @@
+name = "meridian-rating-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# SETTLE_MODE:
+#   "simulated" — no real money; a buyer pays by re-sending with
+#                 X-SIM-PAYMENT: paid (replay script does this).
+#   "x402"      — real facilitator verify/settle (stage 5).
+[vars]
+SETTLE_MODE = "x402"
+DEFAULT_RULESET = "viridian"
+EXPOSE_TRACE = "true"          # demo: show rating trace in 402s; set "false" to redact
+SETTLE_STRATEGY = "settle-first"   # or "serve-first" for latency over safety
+PAY_TO = "0x7f13Ad0cad55d13af1ca2389303108a44C5e4436"
+NETWORK = "base-sepolia"
+ORIGIN = "https://viridian.dejan-ilesic.workers.dev"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "meridian"
+database_id = "51b1568c-6005-4b50-b50c-841abe5784f1"
+
+[[kv_namespaces]]
+binding = "PLANS"
+id = "91add6270ab644eba7e564e232128174"
+
+# Worker-to-worker call to the origin (workers.dev→workers.dev fetch is blocked)
+[[services]]
+binding = "ORIGIN_SERVICE"
+service = "viridian"
+
+# The owner console (packages/ui build) served at / by this same worker.
+# API + metered data paths bypass assets and hit the worker directly.
+[assets]
+directory = "../ui/dist"
+run_worker_first = ["/v1/*", "/meridian/*", "/openapi.json", "/llms.txt"]

@@ -1,0 +1,90 @@
+# Meridian rate plan for Viridian (EU farm prices API).
+# Generated from viridian/src/products.ts — regenerate when the taxonomy grows:
+#   (see viridian repo) npx tsx scripts snippet in build log / CLAUDE.md
+# Pricing logic:
+#   - discovery & catalog free (meta catch-all): being findable is the funnel
+#   - search indexers free everywhere: indexing drives human traffic
+#   - freshness is the price axis: fresh (<=7d, incl. /latest) > recent > archive
+#   - premium zone: SI-exclusive products no other dataset carries, ~2x
+#   - volume discount past 500 req/day, daily credit cap as blast shield
+plan: viridian
+version: 1
+currency: USD
+
+models:
+  classes:
+    frontier_lab:
+      match: [gptbot, claudebot, google-extended, meta-externalagent, bytespider]
+    search_indexer:
+      match: [googlebot, bingbot]
+    verified_agent:
+      match: ["verified:*"]
+    unknown:
+      match: ["*"]
+  zones:
+    premium:                     # SI-exclusive series (declared first — wins)
+    - "/v1/products/tolminski-sir/prices*"
+    - "/v1/products/skuta/prices*"
+    - "/v1/products/trapist/prices*"
+    - "/v1/products/livada/prices*"
+    prices:                      # all paid data routes, per product
+    - "/v1/products/butter/prices*"
+    - "/v1/products/smp/prices*"
+    - "/v1/products/wmp/prices*"
+    - "/v1/products/whey-powder/prices*"
+    - "/v1/products/cheddar/prices*"
+    - "/v1/products/edam/prices*"
+    - "/v1/products/gouda/prices*"
+    - "/v1/products/emmental/prices*"
+    - "/v1/products/cream/prices*"
+    - "/v1/products/butteroil/prices*"
+    - "/v1/products/raw-milk/prices*"
+    - "/v1/products/organic-raw-milk/prices*"
+    - "/v1/products/tolminski-sir/prices*"
+    - "/v1/products/mozzarella/prices*"
+    - "/v1/products/trapist/prices*"
+    - "/v1/products/livada/prices*"
+    - "/v1/products/skuta/prices*"
+    - "/v1/products/drinking-milk-whole/prices*"
+    - "/v1/products/drinking-milk-semi/prices*"
+    - "/v1/products/uht-milk-whole/prices*"
+    - "/v1/products/uht-milk-semi/prices*"
+    - "/v1/products/yogurt-plain/prices*"
+    - "/v1/products/yogurt-fruit/prices*"
+    - "/v1/products/cream-sweet/prices*"
+    - "/v1/products/cream-sour/prices*"
+    - "/v1/products/eggs-cage/prices*"
+    - "/v1/products/eggs-barn/prices*"
+    - "/v1/products/eggs-free-range/prices*"
+    - "/v1/products/eggs-organic/prices*"
+    - "/v1/products/eggs/prices*"
+    - "/v1/products/wheat/prices*"
+    - "/v1/products/feed-wheat/prices*"
+    - "/v1/products/durum-wheat/prices*"
+    - "/v1/products/barley/prices*"
+    - "/v1/products/corn/prices*"
+    meta: ["*"]                 # index, health, catalog, metadata, llms.txt, openapi
+  freshness:
+    bands:
+      - { name: fresh, max_age_days: 7 }
+      - { name: recent, max_age_days: 90 }
+      - { name: archive }
+
+selector:
+  dimensions: [class, zone, freshness]
+  rows:
+    - { id: search-free,    when: { class: search_indexer },                    price: 0 }
+    - { id: meta-free,      when: { zone: meta },                               price: 0 }
+    - { id: premium-fresh,  when: { zone: premium, freshness: fresh },          price: 0.02 }
+    - { id: premium-any,    when: { zone: premium },                            price: 0.01 }
+    - { id: prices-fresh,   when: { zone: prices, freshness: fresh },           price: 0.01 }
+    - { id: prices-recent,  when: { zone: prices, freshness: recent },          price: 0.005 }
+    - { id: prices-archive, when: { zone: prices, freshness: archive },         price: 0.002 }
+    - { id: default,        when: {},                                          price: 0.001 }
+
+tiers:
+  - { up_to: 500, multiplier: 1 }
+  - { multiplier: 0.8 }          # volume discount past 500 requests/day
+
+caps:
+  per_buyer_daily_usd: 10.0
