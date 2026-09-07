@@ -31,6 +31,9 @@ export interface Env {
   FACILITATOR_URL?: string;
   /** Name of the pricing-rules set anonymous traffic rates under. */
   DEFAULT_RULESET?: string;
+  /** Shared secret stamped on proxied requests so the origin can refuse
+   *  traffic that bypassed the meter (authenticated origin pulls). */
+  ORIGIN_KEY?: string;
   /** "true" (demo) exposes matched row + rating trace in 402s; anything else
    *  redacts them — rating logic stays private, buyers see only the price. */
   EXPOSE_TRACE?: string;
@@ -403,11 +406,16 @@ app.all("*", async (c) => {
   };
 
   const serve = async (): Promise<Response> => {
+    const stamp = (r: Request): Request => {
+      const out = new Request(r);
+      if (env.ORIGIN_KEY) out.headers.set("x-meridian-key", env.ORIGIN_KEY);
+      return out;
+    };
     if (env.ORIGIN_SERVICE) {
       const target = new URL(path + url.search, env.ORIGIN ?? "https://origin.internal");
-      return env.ORIGIN_SERVICE.fetch(new Request(target, req));
+      return env.ORIGIN_SERVICE.fetch(stamp(new Request(target, req)));
     }
-    if (env.ORIGIN) return fetch(new Request(new URL(path + url.search, env.ORIGIN), req));
+    if (env.ORIGIN) return fetch(stamp(new Request(new URL(path + url.search, env.ORIGIN), req)));
     const demo = findDemoResource(path);
     if (!demo) return c.text("not found (demo mode: see /meridian/health for API routes)", 404);
     const type = demo.path.startsWith("/api/") ? "application/json" : "text/markdown";

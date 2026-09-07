@@ -32,6 +32,20 @@ Runs as a single Cloudflare Worker (free tier is plenty) with D1 + KV.
 No servers, no database to manage, no card on file. Self-hosting on plain
 Node works too — the code is portable Hono.
 
+**You don't migrate your API — you wrap it in place.** Meridian sits in front
+of any origin you name in `ORIGIN`; your existing API stays exactly where it
+lives. Point your public traffic at the meter, keep the origin as the private
+backend. To stop callers reaching the origin directly and skipping payment,
+pick a rung by how much you can touch the origin:
+
+- **Header check (strongest, tiny origin change):** the meter stamps every
+  proxied request with a shared secret (`ORIGIN_KEY`); the origin rejects
+  metered routes without it. One middleware — copy-paste snippets in
+  [ARCHITECTURE.md](./ARCHITECTURE.md).
+- **No origin change:** put the origin behind an allowlist / Cloudflare Access
+  so only the meter's egress reaches it, or on an unguessable hostname, or —
+  if the origin is itself a Worker — a service binding with no public route.
+
 ## Quickstart (~10 minutes)
 
 ```bash
