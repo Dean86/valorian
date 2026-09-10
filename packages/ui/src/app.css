@@ -375,3 +375,16 @@ textarea.input { resize: vertical; line-height: 1.6; }
 /* ── Set bar (pricing rules page) ──────────────────────────── */
 .set-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .set-bar-select { min-width: 260px; font-family: var(--font-mono); }
+
+/* ── Resource zone tagging ─────────────────────────────────── */
+.zone-tag-select { font: 600 11px var(--font-mono); padding: 3px 7px; border-radius: var(--r-2); border: 1px solid var(--line-2); background: var(--bg-2); color: var(--ink-1); cursor: pointer; }
+.zone-tag-select:hover { border-color: var(--line-3); }
+.zone-tag-select.z-premium { color: var(--red-300); }
+.zone-tag-select.z-prices { color: var(--amber-400); }
+.zone-tag-select.z-meta, .zone-tag-select.z-default { color: var(--green-400); }
+
+/* ── Tag validity editor ───────────────────────────────────── */
+.validity-editor { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 4px 0 2px; }
+.validity-editor .lbl { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-2); }
+.validity-editor label { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; }
+.validity-editor input[type="date"] { font-family: var(--font-mono); font-size: 11px; padding: 3px 6px; color-scheme: dark; }

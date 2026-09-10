@@ -66,6 +66,9 @@ export interface TariffPlan {
     /** Zone name → path patterns (trailing "*" = prefix wildcard, "*" = catch-all).
      *  First match wins, in declaration order. */
     zones?: Record<string, string[]>;
+    /** Optional validity window per zone name (ISO dates). Outside it, the zone
+     *  is skipped in resolution and its resources fall through to the next zone. */
+    zoneValidity?: Record<string, { from?: string; to?: string }>;
     freshness?: { bands: FreshnessBand[] };
     /** Custom reference objects: attribute name → definition. */
     custom?: Record<string, CustomAttribute>;
@@ -87,6 +90,8 @@ export interface RatingInput {
   /** Raw values for custom attributes, keyed by attribute name (e.g. from the
    *  configured headers). Core validates membership and applies defaults. */
   custom?: Record<string, string>;
+  /** Evaluation date (YYYY-MM-DD) for zone validity; defaults to today (UTC). */
+  now?: string;
 }
 
 export interface RatingDecision {

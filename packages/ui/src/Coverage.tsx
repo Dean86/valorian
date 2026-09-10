@@ -50,7 +50,53 @@ function bandAges(plan: TariffPlan): Array<{ band: string; age: number }> {
   });
 }
 
-export function CoverageView({ plan }: { plan: TariffPlan }) {
+export function CoverageView({ plan, onChange }: { plan: TariffPlan; onChange?: (p: TariffPlan) => void }) {
+  const zones = plan.models.zones ?? {};
+  const isCatchall = (name: string) => (zones[name] ?? []).includes("*");
+
+  /** Tag a resource: write its path patterns into the chosen zone and pull them
+   *  from every other zone. Zones resolve first-match-wins, so the tagged zone
+   *  moves ahead of the enumerated/broad zones while catch-alls stay last —
+   *  making every assignment take effect deterministically. Assigning to a
+   *  catch-all (free fallback) just removes the resource from all specific zones. */
+  const assignZone = (row: RouteRow, target: string) => {
+    if (!onChange) return;
+    const patterns = row.slugs
+      ? row.slugs.map((s) => `/v1/products/${s}/prices*`)
+      : [row.label];
+    const stripped: Record<string, string[]> = Object.fromEntries(
+      Object.entries(zones).map(([n, pats]) => [n, pats.filter((p) => !patterns.includes(p))]),
+    );
+    if (!isCatchall(target)) {
+      stripped[target] = [...(stripped[target] ?? []), ...patterns];
+    }
+    const names = Object.keys(stripped);
+    const order = [
+      ...(isCatchall(target) ? [] : [target]),
+      ...names.filter((n) => n !== target && !stripped[n].includes("*")),
+      ...names.filter((n) => stripped[n].includes("*")),
+    ];
+    const nextZones = Object.fromEntries(order.map((n) => [n, stripped[n]]));
+    onChange({ ...plan, models: { ...plan.models, zones: nextZones } });
+  };
+
+  const validity = plan.models.zoneValidity ?? {};
+  const setValidity = (zone: string, field: "from" | "to", value: string) => {
+    if (!onChange) return;
+    const cur = { ...(validity[zone] ?? {}) };
+    if (value) cur[field] = value; else delete cur[field];
+    const next = { ...validity };
+    if (cur.from || cur.to) next[zone] = cur; else delete next[zone];
+    onChange({ ...plan, models: { ...plan.models, zoneValidity: Object.keys(next).length ? next : undefined } });
+  };
+
+  const addZone = (row: RouteRow) => {
+    const name = window.prompt("New tag / content zone (kebab-case) — the resource joins it; price the tag in Pricing rules:");
+    if (!name) return;
+    if (!/^[a-z0-9][a-z0-9-]{1,30}$/.test(name)) return;
+    assignZone(row, name);
+  };
+
   const [spec, setSpec] = useState<OpenApiSpec | null>(null);
   const [cdrs, setCdrs] = useState<CdrLite[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -126,8 +172,8 @@ export function CoverageView({ plan }: { plan: TariffPlan }) {
         if (c.decision === "paid") row.revenue += c.price;
       }
     }
-    // zones first by declaration order feel: premium → priced → free-ish last
-    return out.sort((a, b) => Math.max(...b.prices) - Math.max(...a.prices) || a.label.localeCompare(b.label));
+    // grouping view: order by zone/tag, then route — pricing lives in Pricing rules.
+    return out.sort((a, b) => a.zone.localeCompare(b.zone) || a.label.localeCompare(b.label));
   }, [spec, cdrs, plan, exemplars, ages]);
 
   const unmatched = useMemo(() => {
@@ -162,14 +208,16 @@ export function CoverageView({ plan }: { plan: TariffPlan }) {
           <Help>
             Everything rateable, discovered from the origin&apos;s <code>openapi.json</code> plus observed
             traffic — endpoints today; content, tools &amp; feeds next. Each row shows the zone it resolves
-            to, the price range the live pricing rules produce for it, and what traffic actually hit it.
+            to and what traffic actually hit it. Change a resource&apos;s <b>tag / zone</b> right here to group it — a resource-first way to say
+            &quot;this is premium&quot; without writing patterns. Edits are drafts; <b>publish</b> to apply. New
+            tags start unpriced — set a price for them in Pricing rules.
           </Help>
         </h2>
         {err && <p className="help">{err}</p>}
         <table className="selector-table">
           <thead>
             <tr>
-              <th>route</th><th>zone</th><th>price range</th><th>observed</th><th>revenue</th><th></th>
+              <th>route</th><th>tag / zone</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -182,40 +230,45 @@ export function CoverageView({ plan }: { plan: TariffPlan }) {
                       {r.slugs ? `${r.slugs.length} product${r.slugs.length > 1 ? "s" : ""}: ${r.slugs.slice(0, 3).join(", ")}${r.slugs.length > 3 ? "…" : ""}` : r.summary}
                     </div>
                   </td>
-                  <td><span className={`zone-chip z-${r.zone}`}>{r.zone}</span></td>
-                  <td>{fmtRange(r.prices)}</td>
-                  <td className="cov-num">{r.traffic || "—"}</td>
-                  <td className="cov-num">{r.revenue > 0 ? `$${r.revenue.toFixed(3)}` : "—"}</td>
+                  <td>
+                    {onChange ? (
+                      <select
+                        className={`zone-tag-select z-${r.zone}`}
+                        value={r.zone}
+                        onChange={(e) => { if (e.target.value === "__new") addZone(r); else assignZone(r, e.target.value); }}
+                      >
+                        {Object.keys(zones).map((z) => (
+                          <option key={z} value={z}>{z}{isCatchall(z) ? " (free)" : ""}</option>
+                        ))}
+                        {!(r.zone in zones) && <option value={r.zone}>{r.zone}</option>}
+                        <option value="__new">+ new tag…</option>
+                      </select>
+                    ) : (
+                      <span className={`zone-chip z-${r.zone}`}>{r.zone}</span>
+                    )}
+                  </td>
                   <td>
                     <button className="btn tiny" onClick={() => setOpen(open === r.key ? null : r.key)}>
-                      {open === r.key ? "close" : "prices"}
+                      {open === r.key ? "close" : "validity"}
                     </button>
                   </td>
                 </tr>
                 {open === r.key && (
                   <tr key={`${r.key}-x`}>
-                    <td colSpan={6}>
-                      <table className="cov-grid">
-                        <thead>
-                          <tr><th>class ↓ / freshness →</th>{ages.map((a) => <th key={a.band}>{a.band}</th>)}</tr>
-                        </thead>
-                        <tbody>
-                          {exemplars.map((ex) => (
-                            <tr key={ex.cls}>
-                              <td>{ex.cls}</td>
-                              {ages.map((a) => {
-                                const d = rate(plan, baseInput(r.samplePath, a.age, ex.crawler, ex.verified));
-                                return (
-                                  <td key={a.band} className={d.price === 0 ? "cell-free" : "cell-paid"} title={d.selectorRow}>
-                                    {d.price === 0 ? "free" : `$${d.price}`}
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                      <p className="help">cells show the matched matrix row on hover — this grid is computed by the live rating engine, not a mock</p>
+                    <td colSpan={3}>
+                      <div className="validity-editor">
+                        <span className="lbl">tag <b>{r.zone}</b> valid</span>
+                        <label>from <input type="date" className="input" value={validity[r.zone]?.from ?? ""} disabled={!onChange} onChange={(e) => setValidity(r.zone, "from", e.target.value)} /></label>
+                        <label>to <input type="date" className="input" value={validity[r.zone]?.to ?? ""} disabled={!onChange} onChange={(e) => setValidity(r.zone, "to", e.target.value)} /></label>
+                        {(validity[r.zone]?.from || validity[r.zone]?.to) && (
+                          <button className="btn tiny" onClick={() => { setValidity(r.zone, "from", ""); setValidity(r.zone, "to", ""); }}>clear</button>
+                        )}
+                        <Help>
+                          Applies to the whole <b>{r.zone}</b> tag — leave blank for always-on. Outside the
+                          window the tag is skipped and its resources fall through to the next tag. Edits are
+                          drafts; <b>publish</b> to apply.
+                        </Help>
+                      </div>
                     </td>
                   </tr>
                 )}

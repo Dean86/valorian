@@ -158,3 +158,35 @@ describe("OR value lists and custom attributes", () => {
     expect(missing.attributes.channel).toBe("other");
   });
 });
+
+describe("zone validity", () => {
+  const plan = {
+    plan: "t", version: 1, currency: "USD" as const,
+    models: {
+      classes: { any: { match: ["*"] } },
+      zones: { premium: ["/x*"], base: ["*"] },
+      zoneValidity: { premium: { from: "2026-09-01", to: "2026-09-30" } },
+    },
+    selector: { dimensions: ["zone"], rows: [
+      { id: "prem", when: { zone: "premium" }, price: 0.02 },
+      { id: "base", when: {}, price: 0.001 },
+    ] },
+  };
+  const input = (now: string) => ({
+    crawler: "bot", verified: false, path: "/x/y", contentAgeDays: 0,
+    buyerRequestsToday: 1, buyerSpendTodayUsd: 0, now,
+  });
+  it("applies the premium zone inside its window", () => {
+    const d = rate(plan as never, input("2026-09-15"));
+    expect(d.attributes.zone).toBe("premium");
+    expect(d.price).toBe(0.02);
+  });
+  it("falls through to base after the window closes", () => {
+    const d = rate(plan as never, input("2026-10-05"));
+    expect(d.attributes.zone).toBe("base");
+    expect(d.price).toBe(0.001);
+  });
+  it("falls through before the window opens", () => {
+    expect(rate(plan as never, input("2026-08-20")).attributes.zone).toBe("base");
+  });
+});

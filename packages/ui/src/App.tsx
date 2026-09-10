@@ -320,7 +320,7 @@ export function App() {
               onRenameSet={renameSet}
             />
           )}
-          {view === "coverage" && <CoverageView plan={plan} />}
+          {view === "coverage" && <CoverageView plan={plan} onChange={setPlan} />}
           {view === "accounts" && <AccountsView plan={plan} />}
           {view === "offers" && <OffersView plan={plan} onPlanLoaded={setPlan} />}
           {view === "simulator" && <SimulatorView plan={plan} input={simInput} onInput={setSimInput} />}

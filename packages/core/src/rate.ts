@@ -30,11 +30,20 @@ function resolveClass(plan: TariffPlan, input: RatingInput): string {
   return catchAll ?? "unmatched";
 }
 
-function resolveZone(plan: TariffPlan, path: string): string {
+function zoneActive(plan: TariffPlan, name: string, today: string): boolean {
+  const w = plan.models.zoneValidity?.[name];
+  if (!w) return true;
+  if (w.from && today < w.from) return false;
+  if (w.to && today > w.to) return false;
+  return true;
+}
+
+function resolveZone(plan: TariffPlan, path: string, today: string): string {
   const zones = plan.models.zones;
   if (!zones) return "default";
   let catchAll: string | undefined;
   for (const [name, patterns] of Object.entries(zones)) {
+    if (!zoneActive(plan, name, today)) continue; // outside validity → skip, fall through
     for (const p of patterns) {
       if (p === "*") catchAll ??= name;
       else if (p.endsWith("*") ? path.startsWith(p.slice(0, -1)) : path === p) return name;
@@ -66,9 +75,10 @@ export function rate(plan: TariffPlan, input: RatingInput): RatingDecision {
   const trace: string[] = [];
 
   // Phase 1 — attribute resolution
+  const today = input.now ?? new Date().toISOString().slice(0, 10);
   const attributes: Record<string, string> = {
     class: resolveClass(plan, input),
-    zone: resolveZone(plan, input.path),
+    zone: resolveZone(plan, input.path, today),
     freshness: resolveFreshness(plan, input.contentAgeDays),
   };
   trace.push(
