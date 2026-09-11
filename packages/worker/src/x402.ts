@@ -131,11 +131,17 @@ export type VerifyResult =
 export async function verifyPayment(req: Request, opts: FacilitatorOpts): Promise<VerifyResult> {
   const header = req.headers.get("x-payment");
   if (!header) return { ok: false };
+  if (header.length > 8192) return { ok: false, reason: "oversized X-PAYMENT header" };
   let paymentPayload: unknown;
   try {
     paymentPayload = JSON.parse(atob(header));
   } catch {
     return { ok: false, reason: "malformed X-PAYMENT header" };
+  }
+  // Shape pre-check: reject obvious junk locally so garbage headers never reach
+  // (and never rate-limit us at) the facilitator.
+  if (typeof paymentPayload !== "object" || paymentPayload === null || !("payload" in (paymentPayload as object))) {
+    return { ok: false, reason: "malformed payment payload" };
   }
   const res = await facilitatorPost("/verify", opts, paymentPayload);
   if (!res.ok) return { ok: false, reason: `facilitator verify ${res.status}` };

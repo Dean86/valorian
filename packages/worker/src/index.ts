@@ -14,6 +14,7 @@ import { USDC_BY_NETWORK, buildRequirements, checkPayment, facilitatorUrl, settl
 import { contentAgeDays, contentAgeFromRequest, findDemoResource } from "./content";
 import { buyerCounters, buyersSummary, insertCdr, recentCdrs, statsByClass, updateCdrTxRef, type CdrRow } from "./cdrRepo";
 import { deleteOffer, ensureDefaultOffer, getOffer, getSubscription, listOffers, listSubscriptions, setSubscription, upsertOffer, type Offer } from "./offersRepo";
+import { runAdvisor, type AdvisorContext } from "./advisor";
 
 export interface Env {
   DB: D1Database;
@@ -34,6 +35,15 @@ export interface Env {
   /** Shared secret stamped on proxied requests so the origin can refuse
    *  traffic that bypassed the meter (authenticated origin pulls). */
   ORIGIN_KEY?: string;
+  /** Seller's model key for the buyer-facing advisor (server-side, per meter). */
+  ADVISOR_API_KEY?: string;
+  ADVISOR_MODEL?: string;
+  ADVISOR_BASE_URL?: string;
+  /** Abuse guard: max advisor consults per day / per IP-per-day. Past the cap
+   *  the advisor stops calling the model and returns the offer list instead,
+   *  so a spammer can never drain the seller's model budget. */
+  ADVISOR_DAILY_CAP?: string;
+  ADVISOR_IP_CAP?: string;
   /** "true" (demo) exposes matched row + rating trace in 402s; anything else
    *  redacts them — rating logic stays private, buyers see only the price. */
   EXPOSE_TRACE?: string;
@@ -94,6 +104,42 @@ function zoneSummary(plan: TariffPlan): Array<{ zone: string; free_possible: boo
     return { zone: z, free_possible: prices.some((p) => p === 0),
              min_usd: paid.length ? Math.min(...paid) : 0, max_usd: paid.length ? Math.max(...paid) : 0 };
   });
+}
+
+/** Fetch a path from the configured origin (service binding or ORIGIN URL),
+ *  stamped with the meter key so the origin's bypass guard lets it through. */
+async function originFetch(env: Env, path: string): Promise<Response | null> {
+  const stamp = (r: Request) => { if (env.ORIGIN_KEY) r.headers.set("x-meridian-key", env.ORIGIN_KEY); return r; };
+  try {
+    if (env.ORIGIN_SERVICE) return env.ORIGIN_SERVICE.fetch(stamp(new Request(`https://origin.internal${path}`)));
+    if (env.ORIGIN) return fetch(stamp(new Request(`${env.ORIGIN}${path}`)));
+  } catch { /* fall through */ }
+  return null;
+}
+
+/** Published offers, machine-readable — shared by GET /offers and the advisor. */
+async function publicOffers(env: Env): Promise<unknown[]> {
+  await ensureDefaultOffer(env.DB);
+  const current = await loadPlan(env);
+  const offers = await listOffers(env.DB, true);
+  const out: unknown[] = [];
+  for (const o of offers) {
+    const base = o.ruleset ? await loadPlanNamed(env, o.ruleset) : current;
+    const p = o.plan_version
+      ? (await loadPlanVersion(env, o.ruleset ?? defaultSet(env), o.plan_version)) ?? base
+      : base;
+    out.push({
+      slug: o.slug, name: o.name, description: o.description,
+      charges: { per_use: true, monthly_usd: o.monthly_usd, onetime_usd: o.onetime_usd },
+      credit_limit_usd_per_day: o.daily_cap_usd ?? current.caps?.per_buyer_daily_usd ?? null,
+      included_allowances: o.allowances,
+      usage_pricing: { currency: "USD", by_zone: zoneSummary(p) },
+      subscribe: o.monthly_usd > 0 || o.onetime_usd > 0
+        ? { method: "x402", note: "pay the monthly charge via x402 to subscribe (wallet-bound)" }
+        : { method: "none-needed", note: "default offer — just pay the 402s" },
+    });
+  }
+  return out;
 }
 
 // ---------- Meridian API ----------
@@ -306,35 +352,60 @@ app.post("/meridian/ai/generate", async (c) => {
 // Agents shop here: what can be bought, what each offer costs, what it
 // includes — enough to make (and combine into) an optimal purchasing plan.
 // Prices are exposed as per-zone ranges; the matrix itself stays private.
-app.get("/offers", async (c) => {
-  await ensureDefaultOffer(c.env.DB);
-  const current = await loadPlan(c.env);
-  const offers = await listOffers(c.env.DB, true);
-  const out = [];
-  for (const o of offers) {
-    const base = o.ruleset ? await loadPlanNamed(c.env, o.ruleset) : current;
-    const p = o.plan_version
-      ? (await loadPlanVersion(c.env, o.ruleset ?? defaultSet(c.env), o.plan_version)) ?? base
-      : base;
-    out.push({
-      slug: o.slug,
-      name: o.name,
-      description: o.description,
-      charges: { per_use: true, monthly_usd: o.monthly_usd, onetime_usd: o.onetime_usd },
-      credit_limit_usd_per_day: o.daily_cap_usd ?? current.caps?.per_buyer_daily_usd ?? null,
-      included_allowances: o.allowances,
-      usage_pricing: { currency: "USD", by_zone: zoneSummary(p) },
-      subscribe: o.monthly_usd > 0 || o.onetime_usd > 0
-        ? { method: "manual", note: "self-serve subscription via x402 upto-scheme: coming" }
-        : { method: "none-needed", note: "default offer — just pay the 402s" },
-    });
+app.get("/offers", async (c) => c.json({
+  service: "meridian",
+  payment: { protocol: "x402", network: c.env.NETWORK },
+  offers: await publicOffers(c.env),
+  hint: "compare offers; allowances rate matching usage to $0; the 402 always quotes the final price. Or ask POST /advisor in plain language.",
+}));
+
+// The seller-side advisor: a buying agent states a need in words; we map it to
+// resources, price it with the rating engine, and recommend an offer. Public —
+// but the model runs on the seller's key. Isolated from the metering pipeline.
+app.post("/advisor", async (c) => {
+  const { need } = (await c.req.json().catch(() => ({}))) as { need?: string };
+  if (!need?.trim()) return c.json({ error: "POST { need: \"...\" } — describe what data you want" }, 400);
+
+  // Abuse guard — bounded model budget. Over the cap, degrade to the offer list
+  // (no model call) so nobody can drain the seller's key by spamming.
+  const day = new Date().toISOString().slice(0, 10);
+  const ip = c.req.header("cf-connecting-ip") ?? "anon";
+  const dayKey = `adv:day:${day}`, ipKey = `adv:ip:${ip}:${day}`;
+  const [dayN, ipN] = await Promise.all([c.env.PLANS.get(dayKey), c.env.PLANS.get(ipKey)]);
+  const dayCount = Number(dayN ?? 0), ipCount = Number(ipN ?? 0);
+  const dailyCap = Number(c.env.ADVISOR_DAILY_CAP ?? 200), ipCap = Number(c.env.ADVISOR_IP_CAP ?? 20);
+  if (dayCount >= dailyCap || ipCount >= ipCap) {
+    return c.json({
+      ok: false, capped: true,
+      message: "Consultation limit reached for now — browse the offers directly and let the 402 quote your price.",
+      offers: await publicOffers(c.env),
+    }, 429);
   }
-  return c.json({
-    service: "meridian",
-    payment: { protocol: "x402", network: c.env.NETWORK },
-    offers: out,
-    hint: "compare offers; allowances rate matching usage to $0; the 402 always quotes the final price",
+  try {
+    c.executionCtx.waitUntil(Promise.all([
+      c.env.PLANS.put(dayKey, String(dayCount + 1), { expirationTtl: 172800 }),
+      c.env.PLANS.put(ipKey, String(ipCount + 1), { expirationTtl: 172800 }),
+    ]));
+  } catch { /* counter is best-effort */ }
+
+  const plan = await loadPlan(c.env);
+  // resources: the origin catalog, priced by the engine (fresh, a paying caller).
+  const resources: AdvisorContext["resources"] = [];
+  const cat = await originFetch(c.env, "/v1/products");
+  if (cat?.ok) {
+    const body = (await cat.json()) as { data?: Array<{ slug: string; name_en: string; sector: string; unit_canonical: string }> };
+    for (const p of body.data ?? []) {
+      const d = rate(plan, { crawler: "gptbot", verified: false, path: `/v1/products/${p.slug}/prices/latest`,
+        contentAgeDays: 0, buyerRequestsToday: 1, buyerSpendTodayUsd: 0 });
+      resources.push({ slug: p.slug, name: p.name_en, sector: p.sector, unit: p.unit_canonical,
+        zone: d.attributes.zone, fresh_price_usd: d.price });
+    }
+  }
+  const result = await runAdvisor({
+    apiKey: c.env.ADVISOR_API_KEY ?? "", model: c.env.ADVISOR_MODEL, baseUrl: c.env.ADVISOR_BASE_URL,
+    need, context: { resources, offers: await publicOffers(c.env), currency: plan.currency },
   });
+  return c.json(result, result.ok ? 200 : (result.error?.includes("not configured") ? 503 : 400));
 });
 
 // ---------- The paywall pipeline (everything else) ----------

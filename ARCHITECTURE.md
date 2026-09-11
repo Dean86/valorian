@@ -133,3 +133,34 @@ Mainnet flip: `NETWORK=base` + CDP API keys + back up the seller key first.
 | EDR/CDR + RA | CDRs w/ tx hash; Coverage view (done) | payer wallet into CDR; delta report |
 | Billing care | — | Customers view: CDRs grouped by buyer, itemized statement |
 | Product catalog / offers | single published plan | offers compile onto the matrix: subscriptions = entitlement + $0-to-FUP rows; bundles = zone entitlements; prepaid = `upto` |
+
+## Threat model — can a flood drain me?
+
+Two different balances. Keep them separate.
+
+**1. Your crypto balance cannot be drained by requests — pull-payment.**
+Money flows buyer → seller; your wallet only ever *receives*. No per-request seller-side
+crypto spend: settlement happens only after a *valid signed payment*, which pays you.
+Unpaid/invalid/bogus requests get a 402 and settle nothing — no gas, no charge (the
+facilitator pays gas, and only on a real payment). The worst an attacker can do on the
+money path is give you money.
+
+**2. Your compute/LLM balance — the meter is the shield, that's the whole point.**
+If serving a request costs you money (an LLM API call, self-hosted GPU), an *unpaid*
+request never reaches your origin — it is 402'd at the Cloudflare edge. So a flood of
+bogus/unpaid requests costs you only the cheap meter, never your expensive backend.
+Metering inverts "every request costs me" into "no payment, no compute." That is the
+reason a compute-backed API needs a meter.
+
+| vector | impact | mitigation |
+|---|---|---|
+| unpaid flood on a compute/LLM-backed origin | **none on the backend** — 402'd at the edge, never reaches your compute | this is the meter's core job |
+| paid but under-priced ("buy at a loss") | net loss/call if price < marginal cost | price above cost (the point of differentiated rating) + `per_buyer_daily_usd` credit cap bounds any one buyer's spend |
+| request flood (availability) | Worker daily quota exhausted → unavailable | free tier *stops serving, never bills*; Cloudflare auto DDoS + rate-limit/bot rules (config) |
+| free-route flood | load on your origin (catalog proxied unpaid) | keep free routes cheap/static; edge-cache them; origin rate limits |
+| junk `X-PAYMENT` headers | wasted facilitator /verify | rejected locally first — oversized, bad base64/JSON, or wrong shape never reach the facilitator |
+| advisor spam | *your* model-token spend (advisor is seller-paid) | hard `ADVISOR_DAILY_CAP` + per-IP cap → degrades to the offer list, no model call |
+
+Production config (Cloudflare dashboard, no code): rate-limit `/v1/*`, cache the free
+discovery routes, optional Bot Management. Only the paid Workers plan can cost money on a
+flood — the free tier caps out instead.
