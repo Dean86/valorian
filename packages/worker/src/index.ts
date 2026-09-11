@@ -15,6 +15,7 @@ import { contentAgeDays, contentAgeFromRequest, findDemoResource } from "./conte
 import { buyerCounters, buyersSummary, insertCdr, recentCdrs, statsByClass, updateCdrTxRef, type CdrRow } from "./cdrRepo";
 import { deleteOffer, ensureDefaultOffer, getOffer, getSubscription, listOffers, listSubscriptions, setSubscription, upsertOffer, type Offer } from "./offersRepo";
 import { runAdvisor, type AdvisorContext } from "./advisor";
+import { handleMcp } from "./mcp";
 
 export interface Env {
   DB: D1Database;
@@ -39,11 +40,12 @@ export interface Env {
   ADVISOR_API_KEY?: string;
   ADVISOR_MODEL?: string;
   ADVISOR_BASE_URL?: string;
-  /** Abuse guard: max advisor consults per day / per IP-per-day. Past the cap
-   *  the advisor stops calling the model and returns the offer list instead,
-   *  so a spammer can never drain the seller's model budget. */
-  ADVISOR_DAILY_CAP?: string;
-  ADVISOR_IP_CAP?: string;
+  /** The advisor is metered: ADVISOR_FREE_PER_IP consults free per caller/day
+   *  (and ADVISOR_FREE_DAILY_CAP globally), then priced at ADVISOR_PRICE_USD via
+   *  x402 — the price is the rate limit, so it can't be drained. */
+  ADVISOR_FREE_PER_IP?: string;
+  ADVISOR_FREE_DAILY_CAP?: string;
+  ADVISOR_PRICE_USD?: string;
   /** "true" (demo) exposes matched row + rating trace in 402s; anything else
    *  redacts them — rating logic stays private, buyers see only the price. */
   EXPOSE_TRACE?: string;
@@ -108,6 +110,23 @@ function zoneSummary(plan: TariffPlan): Array<{ zone: string; free_possible: boo
 
 /** Fetch a path from the configured origin (service binding or ORIGIN URL),
  *  stamped with the meter key so the origin's bypass guard lets it through. */
+/** The origin catalog, each resource priced fresh by the engine (a paying,
+ *  first-request caller). Shared by the advisor and the MCP discovery tools. */
+async function pricedCatalog(env: Env, plan: TariffPlan): Promise<AdvisorContext["resources"]> {
+  const out: AdvisorContext["resources"] = [];
+  const cat = await originFetch(env, "/v1/products");
+  if (cat?.ok) {
+    const body = (await cat.json()) as { data?: Array<{ slug: string; name_en: string; sector: string; unit_canonical: string }> };
+    for (const p of body.data ?? []) {
+      const d = rate(plan, { crawler: "gptbot", verified: false, path: `/v1/products/${p.slug}/prices/latest`,
+        contentAgeDays: 0, buyerRequestsToday: 1, buyerSpendTodayUsd: 0 });
+      out.push({ slug: p.slug, name: p.name_en, sector: p.sector, unit: p.unit_canonical,
+        zone: d.attributes.zone, fresh_price_usd: d.price });
+    }
+  }
+  return out;
+}
+
 async function originFetch(env: Env, path: string): Promise<Response | null> {
   const stamp = (r: Request) => { if (env.ORIGIN_KEY) r.headers.set("x-meridian-key", env.ORIGIN_KEY); return r; };
   try {
@@ -352,6 +371,72 @@ app.post("/meridian/ai/generate", async (c) => {
 // Agents shop here: what can be bought, what each offer costs, what it
 // includes — enough to make (and combine into) an optimal purchasing plan.
 // Prices are exposed as per-zone ranges; the matrix itself stays private.
+/**
+ * MCP server — how a 2026 agent mounts Meridian as tools. Streamable HTTP /
+ * JSON-RPC. Discovery + advisory only (browse_offers, list_resources,
+ * get_quote, consult_advisor); paid data is still fetched over x402 HTTP.
+ * consult_advisor honours the same free-then-metered allowance as POST /advisor.
+ */
+app.post("/mcp", async (c) => {
+  const bodyText = await c.req.text();
+  const { status, body } = await handleMcp(bodyText, async (name, args) => {
+    if (name === "browse_offers") {
+      return { text: JSON.stringify(await publicOffers(c.env), null, 2) };
+    }
+    if (name === "list_resources") {
+      const plan = await loadPlan(c.env);
+      const cat = await pricedCatalog(c.env, plan);
+      return { text: JSON.stringify({ currency: plan.currency, resources: cat }, null, 2) };
+    }
+    if (name === "get_quote") {
+      const slug = String(args.slug ?? "").trim();
+      if (!slug) return { error: "get_quote needs a { slug } — call list_resources first" };
+      const plan = await loadPlan(c.env);
+      const hit = (await pricedCatalog(c.env, plan)).find((r) => r.slug === slug);
+      if (!hit) return { error: `no resource with slug "${slug}" — call list_resources` };
+      return { text: JSON.stringify({
+        slug: hit.slug, name: hit.name, zone: hit.zone, currency: plan.currency,
+        price_usd: hit.fresh_price_usd,
+        endpoint: `GET /v1/products/${hit.slug}/prices/latest`,
+        payment: "x402 — the 402 response quotes this price; pay per request",
+      }, null, 2) };
+    }
+    if (name === "consult_advisor") {
+      const need = String(args.need ?? "").trim();
+      if (!need) return { error: "consult_advisor needs a { need } in plain language" };
+      // Same free-then-metered allowance as POST /advisor (per-IP + global/day).
+      const day = new Date().toISOString().slice(0, 10);
+      const ip = c.req.header("cf-connecting-ip") ?? "anon";
+      const ipKey = `adv:ip:${ip}:${day}`, dayKey = `adv:day:${day}`;
+      const [ipN, dayN] = await Promise.all([c.env.PLANS.get(ipKey), c.env.PLANS.get(dayKey)]);
+      const ipCount = Number(ipN ?? 0), dayCount = Number(dayN ?? 0);
+      const freePerIp = Number(c.env.ADVISOR_FREE_PER_IP ?? 3), freeDaily = Number(c.env.ADVISOR_FREE_DAILY_CAP ?? 300);
+      const price = Number(c.env.ADVISOR_PRICE_USD ?? 0.05);
+      if (ipCount >= freePerIp || dayCount >= freeDaily) {
+        return { text: JSON.stringify({
+          metered: true,
+          message: `Free consultations used (${freePerIp}/day). Further consultations are $${price} — call POST /advisor with an x402 payment, or use browse_offers / get_quote (free) to proceed.`,
+        }, null, 2) };
+      }
+      try {
+        c.executionCtx.waitUntil(Promise.all([
+          c.env.PLANS.put(ipKey, String(ipCount + 1), { expirationTtl: 172800 }),
+          c.env.PLANS.put(dayKey, String(dayCount + 1), { expirationTtl: 172800 }),
+        ]));
+      } catch { /* best-effort */ }
+      const plan = await loadPlan(c.env);
+      const result = await runAdvisor({
+        apiKey: c.env.ADVISOR_API_KEY ?? "", model: c.env.ADVISOR_MODEL, baseUrl: c.env.ADVISOR_BASE_URL,
+        need, context: { resources: await pricedCatalog(c.env, plan), offers: await publicOffers(c.env), currency: plan.currency },
+      });
+      if (!result.ok) return { error: result.error ?? "advisor failed" };
+      return { text: JSON.stringify({ message: result.message, recommend_offer: result.recommend_offer, resources: result.resources }, null, 2) };
+    }
+    return { error: `unhandled tool: ${name}` };
+  });
+  return body === null ? c.body(null, 202) : c.json(body as Record<string, unknown>, status as 200 | 400);
+});
+
 app.get("/offers", async (c) => c.json({
   service: "meridian",
   payment: { protocol: "x402", network: c.env.NETWORK },
@@ -363,44 +448,52 @@ app.get("/offers", async (c) => c.json({
 // resources, price it with the rating engine, and recommend an offer. Public —
 // but the model runs on the seller's key. Isolated from the metering pipeline.
 app.post("/advisor", async (c) => {
+  const env = c.env;
   const { need } = (await c.req.json().catch(() => ({}))) as { need?: string };
   if (!need?.trim()) return c.json({ error: "POST { need: \"...\" } — describe what data you want" }, 400);
 
-  // Abuse guard — bounded model budget. Over the cap, degrade to the offer list
-  // (no model call) so nobody can drain the seller's key by spamming.
+  // The advisor is itself metered: a few consults free per caller, then priced
+  // via x402. Dogfooding — even the sales agent is behind the meter, because it
+  // costs compute. The price is the rate limit, so it cannot be drained.
   const day = new Date().toISOString().slice(0, 10);
   const ip = c.req.header("cf-connecting-ip") ?? "anon";
-  const dayKey = `adv:day:${day}`, ipKey = `adv:ip:${ip}:${day}`;
-  const [dayN, ipN] = await Promise.all([c.env.PLANS.get(dayKey), c.env.PLANS.get(ipKey)]);
-  const dayCount = Number(dayN ?? 0), ipCount = Number(ipN ?? 0);
-  const dailyCap = Number(c.env.ADVISOR_DAILY_CAP ?? 200), ipCap = Number(c.env.ADVISOR_IP_CAP ?? 20);
-  if (dayCount >= dailyCap || ipCount >= ipCap) {
-    return c.json({
-      ok: false, capped: true,
-      message: "Consultation limit reached for now — browse the offers directly and let the 402 quote your price.",
-      offers: await publicOffers(c.env),
-    }, 429);
+  const ipKey = `adv:ip:${ip}:${day}`, dayKey = `adv:day:${day}`;
+  const price = Number(env.ADVISOR_PRICE_USD ?? 0.05);
+  const consultUrl = new URL(c.req.url).origin + "/advisor";
+  const quote = () => buildRequirements({
+    priceUsd: price, resource: consultUrl, network: env.NETWORK, payTo: env.PAY_TO,
+    plan: "advisor", planVersion: 0, selectorRow: "advisor-consult",
+    trace: [`free consults used — this consultation is metered at $${price} (x402)`],
+  });
+
+  // Paid path: a valid X-PAYMENT for the consult fee → always serve.
+  let paid = false;
+  if (env.SETTLE_MODE === "simulated") {
+    paid = c.req.header("x-sim-payment") === "paid";
+  } else if (c.req.header("x-payment")) {
+    const fac = { requirement: quote().accepts[0], facilitator: facilitatorUrl(env.NETWORK, env.FACILITATOR_URL) };
+    const v = await verifyPayment(c.req.raw, fac);
+    if (v.ok) paid = (await settlePayment(v.paymentPayload, fac)).ok;
   }
-  try {
-    c.executionCtx.waitUntil(Promise.all([
-      c.env.PLANS.put(dayKey, String(dayCount + 1), { expirationTtl: 172800 }),
-      c.env.PLANS.put(ipKey, String(ipCount + 1), { expirationTtl: 172800 }),
-    ]));
-  } catch { /* counter is best-effort */ }
+
+  if (!paid) {
+    // Free allowance: per-IP plus a global daily budget (bounds distributed abuse).
+    const [ipN, dayN] = await Promise.all([env.PLANS.get(ipKey), env.PLANS.get(dayKey)]);
+    const ipCount = Number(ipN ?? 0), dayCount = Number(dayN ?? 0);
+    const freePerIp = Number(env.ADVISOR_FREE_PER_IP ?? 3), freeDaily = Number(env.ADVISOR_FREE_DAILY_CAP ?? 300);
+    if (ipCount >= freePerIp || dayCount >= freeDaily) {
+      return c.json(quote(), 402); // free consults used → pay to continue
+    }
+    try {
+      c.executionCtx.waitUntil(Promise.all([
+        env.PLANS.put(ipKey, String(ipCount + 1), { expirationTtl: 172800 }),
+        env.PLANS.put(dayKey, String(dayCount + 1), { expirationTtl: 172800 }),
+      ]));
+    } catch { /* best-effort */ }
+  }
 
   const plan = await loadPlan(c.env);
-  // resources: the origin catalog, priced by the engine (fresh, a paying caller).
-  const resources: AdvisorContext["resources"] = [];
-  const cat = await originFetch(c.env, "/v1/products");
-  if (cat?.ok) {
-    const body = (await cat.json()) as { data?: Array<{ slug: string; name_en: string; sector: string; unit_canonical: string }> };
-    for (const p of body.data ?? []) {
-      const d = rate(plan, { crawler: "gptbot", verified: false, path: `/v1/products/${p.slug}/prices/latest`,
-        contentAgeDays: 0, buyerRequestsToday: 1, buyerSpendTodayUsd: 0 });
-      resources.push({ slug: p.slug, name: p.name_en, sector: p.sector, unit: p.unit_canonical,
-        zone: d.attributes.zone, fresh_price_usd: d.price });
-    }
-  }
+  const resources = await pricedCatalog(c.env, plan);
   const result = await runAdvisor({
     apiKey: c.env.ADVISOR_API_KEY ?? "", model: c.env.ADVISOR_MODEL, baseUrl: c.env.ADVISOR_BASE_URL,
     need, context: { resources, offers: await publicOffers(c.env), currency: plan.currency },
