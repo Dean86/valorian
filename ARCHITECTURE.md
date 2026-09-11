@@ -133,6 +133,7 @@ Mainnet flip: `NETWORK=base` + CDP API keys + back up the seller key first.
 | EDR/CDR + RA | CDRs w/ tx hash; Coverage view (done) | payer wallet into CDR; delta report |
 | Billing care | — | Customers view: CDRs grouped by buyer, itemized statement |
 | Product catalog / offers | single published plan | offers compile onto the matrix: subscriptions = entitlement + $0-to-FUP rows; bundles = zone entitlements; prepaid = `upto` |
+| Agent interface (how buyers reach it) | **MCP server at `POST /mcp`** (JSON-RPC): `browse_offers`, `list_resources`, `get_quote`, `consult_advisor` — discovery + advisory; paid data still over x402 HTTP | paid MCP tools (x402-in-MCP); tool for subscribe/self-serve |
 
 ## Threat model — can a flood drain me?
 
@@ -159,7 +160,7 @@ reason a compute-backed API needs a meter.
 | request flood (availability) | Worker daily quota exhausted → unavailable | free tier *stops serving, never bills*; Cloudflare auto DDoS + rate-limit/bot rules (config) |
 | free-route flood | load on your origin (catalog proxied unpaid) | keep free routes cheap/static; edge-cache them; origin rate limits |
 | junk `X-PAYMENT` headers | wasted facilitator /verify | rejected locally first — oversized, bad base64/JSON, or wrong shape never reach the facilitator |
-| advisor spam | *your* model-token spend (advisor is seller-paid) | hard `ADVISOR_DAILY_CAP` + per-IP cap → degrades to the offer list, no model call |
+| advisor spam | *your* model-token spend (advisor is seller-paid) | advisor is **metered by its own meter**: `ADVISOR_FREE_PER_IP` consults free/caller/day (+ global `ADVISOR_FREE_DAILY_CAP`), then x402-priced at `ADVISOR_PRICE_USD`. Price is the rate limit — drain-proof by design, not by arbitrary caps |
 
 Production config (Cloudflare dashboard, no code): rate-limit `/v1/*`, cache the free
 discovery routes, optional Bot Management. Only the paid Workers plan can cost money on a
