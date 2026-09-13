@@ -1,6 +1,6 @@
-# Meridian: a rating engine for machine traffic
+# Valorian: a rating engine for agent traffic
 
-Cloudflare's pay-per-crawl charges every AI crawler one flat price. Meridian is
+Cloudflare's pay-per-crawl charges every AI crawler one flat price. Valorian is
 the layer that was left out: **a metering and rating engine you put in front of
 your own API or content**, pricing each request by *who's asking, what they're
 touching, and how fresh it is*, settled per request over the
@@ -32,7 +32,7 @@ Runs as a single Cloudflare Worker (free tier is plenty) with D1 + KV.
 No servers, no database to manage, no card on file. Self-hosting on plain
 Node works too; the code is portable Hono.
 
-**You don't migrate your API. You wrap it in place.** Meridian sits in front
+**You don't migrate your API. You wrap it in place.** Valorian sits in front
 of any origin you name in `ORIGIN`; your existing API stays exactly where it
 lives. Point your public traffic at the meter, keep the origin as the private
 backend. To stop callers reaching the origin directly and skipping payment,

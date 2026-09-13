@@ -1,4 +1,4 @@
-# Meridian — architecture & flow reference
+# Valorian: architecture & flow reference
 
 *Updated 2026-08-26, the day of the first real settlement
 (tx `0x01a79e16…ba12`, Base Sepolia). Everything below is deployed reality,
@@ -9,7 +9,7 @@ not design intent.*
 ```
                                   ┌──────────────────────── CLOUDFLARE ───────────────────────┐
   agent / crawler                 │                                                            │
-  (buyer wallet) ──── request ──► │  MERIDIAN WORKER  ── service binding ──►  VIRIDIAN WORKER  │
+  (buyer wallet) ──── request ──► │  VALORIAN WORKER  ── service binding ──►  VIRIDIAN WORKER  │
         │                         │  the meter/OCS                            the origin API   │
         │ signs x402              │  · console UI at /                        · /v1 data       │
         │ authorization           │  · rate matrix (KV plan)                  · dashboard at /  │
@@ -23,12 +23,12 @@ not design intent.*
                                                               EC portal + SI TIS XLSX sources
 ```
 
-- **Viridian** knows nothing about money. **Meridian** knows nothing about farm
+- **Viridian** knows nothing about money. **Valorian** knows nothing about farm
   prices. The pair is the product template: any origin behind the same meter.
-- Meridian public URL: `https://meridian-rating-worker.dejan-ilesic.workers.dev`
+- Valorian public URL: `https://meridian-rating-worker.dejan-ilesic.workers.dev`
   (console at `/`, agents hit `/v1/*`).
 - Viridian public URL: `https://viridian.dejan-ilesic.workers.dev` (status
-  dashboard at `/`, same API unmetered — origin is deliberately reachable
+  dashboard at `/`, same API unmetered, origin is deliberately reachable
   for now; hide it later via access rules if desired).
 
 ## Request flow (per request through the meter)
@@ -37,7 +37,7 @@ not design intent.*
 sequenceDiagram
     autonumber
     participant A as Agent (buyer wallet)
-    participant M as Meridian worker
+    participant M as Valorian worker
     participant F as Facilitator
     participant B as Base chain
     participant V as Viridian origin
@@ -78,7 +78,7 @@ tiers=FUP · caps=credit limit.
 | `SETTLE_MODE` | `simulated` \| `x402` | pretend header vs real facilitator |
 | `SETTLE_STRATEGY` | `settle-first` (default) \| `serve-first` | hash-before-data (safety, +1–2s) vs respond-after-verify (latency; CDR briefly `pending:…`, then stamped; failures visible as `failed:…`) |
 | `NETWORK` | `base-sepolia` \| `base` | testnet (free x402.org facilitator, no keys) vs mainnet (CDP facilitator, CDP keys, real USDC) |
-| `PAY_TO` | 0x… | seller wallet (key in rating-engine/.env — self-custody) |
+| `PAY_TO` | 0x… | seller wallet (key in rating-engine/.env, self-custody) |
 | `FACILITATOR_URL` | optional | override the by-network default |
 | `ORIGIN` + service binding | URL + `viridian` | the metered origin (workers.dev→workers.dev fetch is blocked → binding required) |
 | `ADMIN_TOKEN` (secret) | — | guards POST /meridian/plan (console prompts once) |
@@ -88,14 +88,14 @@ tiers=FUP · caps=credit limit.
 1. Client SDKs (x402-fetch) schema-validate the 402: `resource` must be a
    **full URL**, `mimeType` is **required**.
 2. The facilitator needs the asset's **EIP-712 domain** in
-   `accepts[].extra` — Sepolia USDC `{name:"USDC",version:"2"}`, mainnet
-   `{name:"USD Coin",version:"2"}` — else `invalid_exact_evm_missing_eip712_domain`.
+   `accepts[].extra`, Sepolia USDC `{name:"USDC",version:"2"}`, mainnet
+   `{name:"USD Coin",version:"2"}`, else `invalid_exact_evm_missing_eip712_domain`.
 3. The facilitator reads `x402Version` from **inside paymentPayload**.
 4. x402.org facilitator is V2-first (CAIP-2 networks) but still routes V1;
    V2 header-format upgrade is roadmap, not blocker.
-5. The buyer needs **no ETH** — signatures are off-chain, facilitator pays gas.
+5. The buyer needs **no ETH**, signatures are off-chain, facilitator pays gas.
 6. Edge deploys propagate ~30 s; don't debug a 402 four seconds after deploy.
-7. Facilitator `/supported` also lists an **`upto` scheme** — spend-cap
+7. Facilitator `/supported` also lists an **`upto` scheme**, spend-cap
    authorization drawn down per request = the prepaid-balance primitive for
    future subscription/bundle offers.
 
@@ -110,7 +110,7 @@ cd packages/ui && npm run build && cd ../worker && npx wrangler deploy
 
 # publish a plan from YAML (or use the console + admin token)
 npx tsx -e "…parse tariffs/viridian.yaml…" | curl -X POST …/meridian/plan \
-  -H "Authorization: Bearer $MERIDIAN_ADMIN_TOKEN" -d @-
+  -H "Authorization: Bearer $VALORIAN_ADMIN_TOKEN" -d @-
 
 # demo buyer (rating-engine root; .env has BUYER_PRIVATE_KEY)
 npx tsx demo/buy.ts                                    # butter /latest
@@ -124,44 +124,44 @@ Wallets (keys in `rating-engine/.env`, gitignored): seller `0x7f13…4436`,
 demo buyer `0x32AA…59DD` (fund: faucet.circle.com → Base Sepolia).
 Mainnet flip: `NETWORK=base` + CDP API keys + back up the seller key first.
 
-## Layer map (BRM vocabulary) — where this is going
+## Layer map (BRM vocabulary): where this is going
 
-| BRM concept | Meridian today | roadmap |
+| BRM concept | Valorian today | roadmap |
 |---|---|---|
 | PDC / charge selector | rate matrix + models (done) | sentence view, OpenAPI zone import |
 | Online charging (OCS) | 402/verify/settle pipeline (done, real) | V2 headers, `upto` prepaid scheme |
 | EDR/CDR + RA | CDRs w/ tx hash; Coverage view (done) | payer wallet into CDR; delta report |
 | Billing care | — | Customers view: CDRs grouped by buyer, itemized statement |
 | Product catalog / offers | single published plan | offers compile onto the matrix: subscriptions = entitlement + $0-to-FUP rows; bundles = zone entitlements; prepaid = `upto` |
-| Agent interface (how buyers reach it) | **MCP server at `POST /mcp`** (JSON-RPC): `browse_offers`, `list_resources`, `get_quote`, `consult_advisor` — discovery + advisory; paid data still over x402 HTTP | paid MCP tools (x402-in-MCP); tool for subscribe/self-serve |
+| Agent interface (how buyers reach it) | **MCP server at `POST /mcp`** (JSON-RPC): `browse_offers`, `list_resources`, `get_quote`, `consult_advisor`, discovery + advisory; paid data still over x402 HTTP | paid MCP tools (x402-in-MCP); tool for subscribe/self-serve |
 
-## Threat model — can a flood drain me?
+## Threat model: can a flood drain me?
 
 Two different balances. Keep them separate.
 
-**1. Your crypto balance cannot be drained by requests — pull-payment.**
+**1. Your crypto balance cannot be drained by requests, pull-payment.**
 Money flows buyer → seller; your wallet only ever *receives*. No per-request seller-side
 crypto spend: settlement happens only after a *valid signed payment*, which pays you.
-Unpaid/invalid/bogus requests get a 402 and settle nothing — no gas, no charge (the
+Unpaid/invalid/bogus requests get a 402 and settle nothing, no gas, no charge (the
 facilitator pays gas, and only on a real payment). The worst an attacker can do on the
 money path is give you money.
 
-**2. Your compute/LLM balance — the meter is the shield, that's the whole point.**
+**2. Your compute/LLM balance, the meter is the shield, that's the whole point.**
 If serving a request costs you money (an LLM API call, self-hosted GPU), an *unpaid*
-request never reaches your origin — it is 402'd at the Cloudflare edge. So a flood of
+request never reaches your origin, it is 402'd at the Cloudflare edge. So a flood of
 bogus/unpaid requests costs you only the cheap meter, never your expensive backend.
 Metering inverts "every request costs me" into "no payment, no compute." That is the
 reason a compute-backed API needs a meter.
 
 | vector | impact | mitigation |
 |---|---|---|
-| unpaid flood on a compute/LLM-backed origin | **none on the backend** — 402'd at the edge, never reaches your compute | this is the meter's core job |
+| unpaid flood on a compute/LLM-backed origin | **none on the backend**, 402'd at the edge, never reaches your compute | this is the meter's core job |
 | paid but under-priced ("buy at a loss") | net loss/call if price < marginal cost | price above cost (the point of differentiated rating) + `per_buyer_daily_usd` credit cap bounds any one buyer's spend |
 | request flood (availability) | Worker daily quota exhausted → unavailable | free tier *stops serving, never bills*; Cloudflare auto DDoS + rate-limit/bot rules (config) |
 | free-route flood | load on your origin (catalog proxied unpaid) | keep free routes cheap/static; edge-cache them; origin rate limits |
-| junk `X-PAYMENT` headers | wasted facilitator /verify | rejected locally first — oversized, bad base64/JSON, or wrong shape never reach the facilitator |
-| advisor spam | *your* model-token spend (advisor is seller-paid) | advisor is **metered by its own meter**: `ADVISOR_FREE_PER_IP` consults free/caller/day (+ global `ADVISOR_FREE_DAILY_CAP`), then x402-priced at `ADVISOR_PRICE_USD`. Price is the rate limit — drain-proof by design, not by arbitrary caps |
+| junk `X-PAYMENT` headers | wasted facilitator /verify | rejected locally first, oversized, bad base64/JSON, or wrong shape never reach the facilitator |
+| advisor spam | *your* model-token spend (advisor is seller-paid) | advisor is **metered by its own meter**: `ADVISOR_FREE_PER_IP` consults free/caller/day (+ global `ADVISOR_FREE_DAILY_CAP`), then x402-priced at `ADVISOR_PRICE_USD`. Price is the rate limit, drain-proof by design, not by arbitrary caps |
 
 Production config (Cloudflare dashboard, no code): rate-limit `/v1/*`, cache the free
 discovery routes, optional Bot Management. Only the paid Workers plan can cost money on a
-flood — the free tier caps out instead.
+flood, the free tier caps out instead.
