@@ -1,0 +1,17 @@
+name = "valorian-ppc-adapter"
+main = "src/index.ts"
+compatibility_date = "2026-09-14"
+
+# Bind the SAME KV namespace your console publishes the plan to, so this adapter
+# rates under the plan you set in the UI:
+# [[kv_namespaces]]
+# binding = "PLANS"
+# id = "<your PLANS namespace id>"
+
+# Run this Worker on the zone you want to price, then enable Pay Per Crawl with
+# dynamic (in-band) pricing on that zone. Add a route, e.g.:
+# routes = [{ pattern = "example.com/*", zone_name = "example.com" }]
+
+# Optional — which published ruleset anonymous traffic rates under (default "viridian").
+# [vars]
+# DEFAULT_RULESET = "viridian"
