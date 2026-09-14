@@ -6,9 +6,9 @@
  */
 
 import { Hono } from "hono";
-import { rate, type TariffPlan } from "@meridian/rating-core";
-import { defaultPlan } from "@meridian/rating-core/defaultPlan";
-import { validatePlan } from "@meridian/rating-core/validate";
+import { rate, type TariffPlan } from "@valorian/rating-core";
+import { defaultPlan } from "@valorian/rating-core/defaultPlan";
+import { validatePlan } from "@valorian/rating-core/validate";
 import { identifyCaller } from "./identify";
 import { USDC_BY_NETWORK, buildRequirements, checkPayment, facilitatorUrl, settlePayment, verifyPayment } from "./x402";
 import { contentAgeDays, contentAgeFromRequest, findDemoResource } from "./content";

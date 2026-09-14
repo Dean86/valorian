@@ -1,0 +1,13 @@
+name = "valorian-ppc-pricing"
+main = "worker.js"
+compatibility_date = "2026-09-14"
+
+# Deploy with: npx wrangler deploy
+#
+# Then run this Worker on the zone you want to price, and enable Pay Per Crawl
+# with dynamic (in-band) pricing on that zone. Add the route in the dashboard
+# (Workers Routes) or here, e.g.:
+#
+# routes = [
+#   { pattern = "example.com/*", zone_name = "example.com" }
+# ]

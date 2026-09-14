@@ -1,5 +1,5 @@
 {
-  "name": "@meridian/rating-ui",
+  "name": "@valorian/rating-ui",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@meridian/design": "file:../../../design",
-    "@meridian/rating-core": "*",
+    "@valorian/design": "file:../../../design",
+    "@valorian/rating-core": "*",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "yaml": "^2.5.0"

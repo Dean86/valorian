@@ -1,5 +1,5 @@
 {
-  "name": "@meridian/rating-worker",
+  "name": "@valorian/rating-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^2.1.0",
-    "@meridian/rating-core": "*",
+    "@valorian/rating-core": "*",
     "hono": "^4.6.0"
   },
   "devDependencies": {

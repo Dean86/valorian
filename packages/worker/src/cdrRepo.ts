@@ -6,7 +6,7 @@
  * becomes necessary.
  */
 
-import type { RatingDecision } from "@meridian/rating-core/types";
+import type { RatingDecision } from "@valorian/rating-core/types";
 
 export interface CdrRow {
   ts: string;

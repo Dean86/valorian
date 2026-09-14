@@ -12,7 +12,7 @@ import {
   type AiPlan,
   type TariffPlan,
   type ValidationIssue,
-} from "@meridian/rating-core";
+} from "@valorian/rating-core";
 
 export interface CopilotRequest {
   provider: "anthropic" | "openai";
